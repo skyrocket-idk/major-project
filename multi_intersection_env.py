@@ -1,43 +1,37 @@
 from traffic_env import TrafficIntersectionEnv
 
 class MultiIntersectionEnv:
-    def __init__(self, num_intersections):
-        self.num_intersections = num_intersections
-        self.intersection_ids = list(range(num_intersections))
+    def __init__(self, n=4, global_reward_weight=0.25):
+        self.n = n
+        self.global_reward_weight = global_reward_weight
+        self.envs = [TrafficIntersectionEnv() for _ in range(n)]
 
-        # create one env per intersection
-        self.envs = {
-            i: TrafficIntersectionEnv()
-            for i in self.intersection_ids
-        }
-
-        # shared spaces (same for all)
-        self.action_size = self.envs[0].action_space.n
-        self.state_size = self.envs[0].observation_space.shape[0]
 
     def reset(self):
         states = {}
-        for i, env in self.envs.items():
+        for i, env in enumerate(self.envs):
             obs, _ = env.reset()
-            states[i] = self._state_to_tuple(obs)
+            states[i] = tuple(obs)
         return states
 
     def step(self, actions):
         next_states = {}
         rewards = {}
-        done = False
-        info = {}
+        dones = {}
 
-        for i, action in actions.items():
-            obs, reward, terminated, truncated, _ = self.envs[i].step(action)
-
-            next_states[i] = self._state_to_tuple(obs)
+        for i, env in enumerate(self.envs):
+            obs, reward, terminated, truncated, _ = env.step(actions[i])
+            next_states[i] = tuple(obs)
             rewards[i] = reward
-            done = done or terminated or truncated
-            info[i] = {}
+            dones[i] = terminated or truncated
 
-        return next_states, rewards, done, info
+        done = all(dones.values())
 
-    def _state_to_tuple(self, obs):
-        # IMPORTANT: Q-learning needs hashable states
-        return tuple(obs.tolist())
+        global_reward = sum(rewards.values())
+
+        for i in rewards:
+            rewards[i] += self.global_reward_weight * global_reward
+
+
+
+        return next_states, rewards, done

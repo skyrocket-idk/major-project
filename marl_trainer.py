@@ -1,60 +1,106 @@
-class MultiAgentTrainer:
-    def __init__(self, env, agents, neighbors=None, beta=0.3):
-        self.env = env
-        self.agents = agents
-        self.neighbors = neighbors or {}
-        self.beta = beta
+import numpy as np
+from multi_intersection_env import MultiIntersectionEnv
+from q_learning_agent import QLearningAgent
 
-    def shape_rewards(self, rewards):
-        shaped = {}
-        for i in rewards:
-            neighbor_reward = sum(
-                rewards.get(j, 0) for j in self.neighbors.get(i, [])
+class MARLTrainer:
+    def __init__(
+        self,
+        n_agents=4,
+        episodes=1000,
+        max_steps=200,
+        epsilon_start=1.0,
+        epsilon_min=0.05,
+        epsilon_decay=0.995
+    ):
+        self.n_agents = n_agents
+        self.episodes = episodes
+        self.max_steps = max_steps
+
+        # Environment
+        self.env = MultiIntersectionEnv(n=n_agents)
+
+        # Agents
+        self.agents = {
+            i: QLearningAgent(
+                state_size=4,
+                action_size=2,
+                agent_id=i
             )
-            shaped[i] = rewards[i] + self.beta * neighbor_reward
-        return shaped
+            for i in range(self.n_agents)
+        }
 
-    def train_episode(self):
-        states = self.env.reset()
-        done = False
-        total_reward = 0
 
-        while not done:
+        self.episode_rewards = []
 
-            # 1️⃣ Select actions using current policy
-            actions = {
-                i: agent.select_action(states[i])
-                for i, agent in self.agents.items()
-            }
+    def train(self):
+        print(f"Starting MARL training with {self.n_agents} agents")
 
-            # 2️⃣ Step environment (this increments timestep)
-            next_states, rewards, done, info = self.env.step(actions)
+        for ep in range(self.episodes):
+            states = self.env.reset()
+            done = False
+            step = 0
+            episode_reward = 0.0
 
-            # 3️⃣ Optional cooperative reward shaping
-            rewards = self.shape_rewards(rewards)
+            while not done and step < self.max_steps:
+                # --- select actions ---
+                actions = {
+                    i: self.agents[i].select_action(states[i])
+                    for i in self.agents
+                }
 
-            # 4️⃣ Q-learning updates
-            for i, agent in self.agents.items():
-                agent.update(
-                    states[i],
-                    actions[i],
-                    rewards[i],
-                    next_states[i]
+                # --- environment step ---
+                next_states, rewards, done = self.env.step(actions)
+
+                # --- learning ---
+                for i in self.agents:
+                    self.agents[i].update(
+                        states[i],
+                        actions[i],
+                        rewards[i],
+                        next_states[i]
+                    )
+                    episode_reward += rewards[i]
+
+                states = next_states
+                step += 1
+
+            self.episode_rewards.append(episode_reward)
+
+            # --- logging ---
+            if ep % 10 == 0:
+                eps = {i: round(a.epsilon, 3) for i, a in self.agents.items()}
+                print(
+                    f"Episode {ep:4d} | "
+                    f"Steps: {step:3d} | "
+                    f"Total Reward: {episode_reward:.2f} | "
+                    f"Epsilons: {eps}"
                 )
-                total_reward += rewards[i]
 
-            # 5️⃣ Advance state
-            states = next_states
+        print("Training complete")
 
-        # episode length (all envs are synchronous)
-        episode_length = self.env.envs[0].timestep
+    def evaluate(self, episodes=5):
+        print("Evaluating trained agents (epsilon = 0)")
 
-        # normalized metric (this is what you should log)
-        avg_reward_per_step = total_reward / episode_length
-
-        # epsilon decay ONCE per episode
         for agent in self.agents.values():
-            agent.decay_epsilon()
+            agent.epsilon = 0.0
 
-        return avg_reward_per_step
+        for ep in range(episodes):
+            states = self.env.reset()
+            done = False
+            step = 0
+            total_reward = 0.0
 
+            while not done and step < self.max_steps:
+                actions = {
+                    i: self.agents[i].select_action(states[i])
+                    for i in self.agents
+                }
+
+                next_states, rewards, done = self.env.step(actions)
+
+                total_reward += sum(rewards.values())
+                states = next_states
+                step += 1
+
+            print(f"[EVAL] Episode {ep} | Reward: {total_reward:.2f}")
+        np.savetxt("episode_rewards.csv", self.episode_rewards)

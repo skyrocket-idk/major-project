@@ -131,7 +131,7 @@ class TrafficIntersectionEnv(Env):
         # ----------------------------
 
         switch_penalty = -0.2 if self.phase != prev_phase else 0.0
-        reward = -(self.queue_NS + self.queue_EW) + switch_penalty
+        reward = -0.1 * (self.queue_NS + self.queue_EW)
 
         # stats
         self.total_waiting_time += (self.queue_NS + self.queue_EW)
