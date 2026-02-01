@@ -8,16 +8,20 @@ from gymnasium.spaces import Discrete, Box
 
 class TrafficIntersectionEnv(Env):
     metadata = {"render_modes": []}
-
+    def _get_obs(self):
+        return np.array([self.queue_NS, self.queue_EW, self.phase], dtype=np.int32)
     def __init__(self):
         super().__init__()
 
-        # Actions:
-        # 0 = NS green
-        # 1 = EW green
-        # 2 = All red (transition)
-        # 3 = Pedestrian mode (optional)
+        # Action = “Should I switch?”
+        # 0 → Keep current phase
+        # 1 → Request switch
+
         self.action_space = Discrete(2)
+        self.min_green = 5
+        self.phase_timer = 0
+        self.max_red = 20
+        self.red_timer = 0
 
         # Observations:
         # [queue_NS, queue_EW, phase]
@@ -30,75 +34,106 @@ class TrafficIntersectionEnv(Env):
         # internal states
         self.queue_NS = 0
         self.queue_EW = 0
-        self.phase = 0      # current signal phase (0–3)
+        self.phase = 0      
         self.timestep = 0
 
         # stats
         self.total_waiting_time = 0
 
         # config
-        self.arrival_rate_NS = 0.25
-        self.arrival_rate_EW = 0.25
-        self.pass_rate = 1
-        self.max_steps = 200
+        self.arrival_rate_NS = 0.9
+        self.arrival_rate_EW = 0.1
+        self.pass_rate = 2
 
 
 
     def reset(self, seed=None, options=None):
-        self.prev_phase = 0
         super().reset(seed=seed)
         self.queue_NS = 0
         self.queue_EW = 0
         self.phase = 0
         self.timestep = 0
         self.total_waiting_time = 0
+        self.phase_timer = 0
+        self.red_timer = 0
         return self._get_obs(), {}
 
 
 
     def step(self, action):
         self.timestep += 1
-        self.phase = action
-        self.queue_NS = min(self.queue_NS, 50)
-        self.queue_EW = min(self.queue_EW, 50)
-        self.prev_phase = 0
 
-        # spawn new vehicles
+        # clip queues to observation bounds
+        self.queue_NS = np.clip(self.queue_NS, 0, 50)
+        self.queue_EW = np.clip(self.queue_EW, 0, 50)
+
+        prev_phase = self.phase
+
+        # ----------------------------
+        # Phase control logic
+        # ----------------------------
+
+        # request phase change
+        if action != self.phase:
+            if self.phase_timer >= self.min_green:
+                self.phase = action
+                self.phase_timer = 0
+                self.red_timer = 0
+            else:
+                self.phase_timer += 1
+                self.red_timer += 1
+        else:
+            # stay in same phase
+            self.phase_timer += 1
+            self.red_timer += 1
+
+        # force switch if max-red exceeded
+        if self.red_timer >= self.max_red and self.phase_timer >= self.min_green:
+            self.phase = 1 - self.phase
+            self.phase_timer = 0
+            self.red_timer = 0
+
+        # ----------------------------
+        # Traffic dynamics
+        # ----------------------------
+
+        # spawn vehicles
         if np.random.rand() < self.arrival_rate_NS:
             self.queue_NS += 1
         if np.random.rand() < self.arrival_rate_EW:
             self.queue_EW += 1
 
-        # cars pass if green
-        if action == 0:    # NS green
+        # vehicles pass (ONCE per step, based on actual phase)
+        if self.phase == 0:      # NS green
             self.queue_NS = max(0, self.queue_NS - self.pass_rate)
-        elif action == 1:  # EW green
-            self.queue_EW = max(0, self.queue_EW - self.pass_rate)
-        if action == 0:
-            self.queue_NS = max(0, self.queue_NS - self.pass_rate)
-        elif action == 1:
+        elif self.phase == 1:    # EW green
             self.queue_EW = max(0, self.queue_EW - self.pass_rate)
 
-        # waiting time accumulates
+        # ----------------------------
+        # Reward
+        # ----------------------------
+
+        switch_penalty = -0.2 if self.phase != prev_phase else 0.0
+        reward = -(self.queue_NS + self.queue_EW) + switch_penalty
+
+        # stats
         self.total_waiting_time += (self.queue_NS + self.queue_EW)
-        switch_penalty = 0
-        if action != self.prev_phase:
-            switch_penalty = -0.5
-        self.prev_phase = action
-
-
-        # reward = - (total queue + waiting)
-        reward = - (self.queue_NS + self.queue_EW) + switch_penalty
-
 
         terminated = False
-        truncated = self.timestep >= self.max_steps
+        truncated = False
 
         return self._get_obs(), reward, terminated, truncated, {}
 
+        # --------------------------------------------------------
 
-    # --------------------------------------------------------
 
-    def _get_obs(self):
-        return np.array([self.queue_NS, self.queue_EW, self.phase], dtype=np.int32)
 
+    def render(self):
+        print(
+            f"t={self.timestep} | "
+            f"Phase={self.phase} | "
+            f"NS={self.queue_NS} EW={self.queue_EW}"
+        )
+
+    def close(self):
+        pass
